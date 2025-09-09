@@ -5,18 +5,22 @@ const axios = require("axios");
 const dns = require("node:dns").promises;
 const { debug, error } = require("./logger");
 
-function resolveBase(superBase) {
-  // Permite override por .env (útil se o host oficial mudar)
-  if (process.env.SUPERLOGICA_BASE_URL) return process.env.SUPERLOGICA_BASE_URL;
+function pickBase(superBase) {
+  const envBase = (process.env.SUPERLOGICA_BASE_URL || "").trim();
+  if (envBase) return envBase;
 
-  switch (String(superBase || "").toLowerCase()) {
+  switch (
+    String(superBase || "")
+      .toLowerCase()
+      .trim()
+  ) {
     case "condominios":
       return "https://apicondominios.superlogica.com";
     case "assinaturas":
       return "https://apiassinaturas.superlogica.com";
     case "imobiliarias":
-      // ATENÇÃO: este host pode não resolver em alguns ambientes.
-      // Use SUPERLOGICA_BASE_URL no .env se precisar apontar para outro host.
+      // Host oficial pode não resolver em alguns ambientes;
+      // use SUPERLOGICA_BASE_URL no .env se necessário.
       return "https://apiimobiliarias.superlogica.com";
     default:
       // fallback seguro
@@ -24,16 +28,24 @@ function resolveBase(superBase) {
   }
 }
 
-async function assertDnsReachable(baseUrl) {
-  const host = new URL(baseUrl).host;
-  try {
-    await dns.lookup(host);
-  } catch (e) {
-    throw new Error(
-      `DNS não resolve para ${host} (${e.code}). ` +
-        `Defina SUPERLOGICA_BASE_URL no .env ou ajuste o superBase do tenant.`
-    );
+function pickPath() {
+  const envPath = (
+    process.env.SUPERLOGICA_BOLETOS_PATH || "/v1/boletos"
+  ).trim();
+  // garante a barra inicial
+  return envPath.startsWith("/") ? envPath : `/${envPath}`;
+}
+
+function ensureHttpUrl(u) {
+  if (!/^https?:\/\//i.test(u)) {
+    throw new Error(`Base URL inválida (sem http/https): ${u}`);
   }
+  return u.replace(/\s+/g, ""); // remove espaços acidentais
+}
+
+async function assertDnsReachable(urlStr) {
+  const host = new URL(urlStr).host;
+  await dns.lookup(host); // lança se não resolver
 }
 
 function buildHeaders(appToken, accessToken) {
@@ -46,7 +58,6 @@ function buildHeaders(appToken, accessToken) {
 
 function buildParams(superBase, condominioId, cpf) {
   const p = { cpf, status: "em_aberto" };
-  // Só condomínios usa condominio_id (e não envie string 'NULL')
   if (
     String(superBase || "").toLowerCase() === "condominios" &&
     condominioId &&
@@ -73,10 +84,10 @@ function normalizeBoletos(data) {
  * superBase: 'condominios' | 'assinaturas' | 'imobiliarias'
  * appToken/accessToken: tokens da Superlógica
  * condominioId: só para Condomínios (opcional)
- * cpf: string com apenas dígitos
+ * cpf: string (apenas dígitos)
  * options:
- *  - baseUrlOverride: sobrescreve host (alternativa ao SUPERLOGICA_BASE_URL)
- *  - pathOverride: sobrescreve path (alternativa ao SUPERLOGICA_BOLETOS_PATH)
+ *  - baseUrlOverride: sobrescreve host
+ *  - pathOverride: sobrescreve path
  */
 async function listarBoletosPorCPF({
   superBase,
@@ -87,13 +98,25 @@ async function listarBoletosPorCPF({
   baseUrlOverride,
   pathOverride,
 }) {
-  const base = baseUrlOverride || resolveBase(superBase);
-  await assertDnsReachable(base);
+  // 1) Base e path
+  let base = (baseUrlOverride || pickBase(superBase) || "").trim();
+  let path = (pathOverride || pickPath() || "").trim();
 
-  // O path pode variar por produto; deixe configurável
-  const path =
-    pathOverride || process.env.SUPERLOGICA_BOLETOS_PATH || "/v1/boletos";
-  const url = `${base}${path}`;
+  base = ensureHttpUrl(base);
+  // compõe com URL API do node (evita 'Invalid URL' por concat incorreta)
+  const url = new URL(path, base).toString();
+
+  // 2) DNS (melhor mensagem que ENOTFOUND genérico)
+  try {
+    await assertDnsReachable(base);
+  } catch (e) {
+    throw new Error(
+      `DNS não resolve para ${new URL(base).host} (${e.code}). ` +
+        `Ajuste SUPERLOGICA_BASE_URL ou o superBase do tenant.`
+    );
+  }
+
+  // 3) Chamada
   const params = buildParams(superBase, condominioId, cpf);
   const headers = buildHeaders(appToken, accessToken);
 
@@ -104,26 +127,27 @@ async function listarBoletosPorCPF({
       params,
       headers,
       timeout: 15000,
-      // Deixe 4xx passar para logarmos a resposta do servidor
       validateStatus: (s) => s < 500,
     });
 
     if (status >= 400) {
-      error("Superlogica HTTP " + status, data);
-      // devolve vazio para o fluxo seguir sem quebrar
+      error(`Superlogica HTTP ${status}`, data);
       return [];
     }
-
     return normalizeBoletos(data);
   } catch (err) {
-    // DNS, timeout, rede, etc.
     error("listarBoletosPorCPF", {
       code: err.code,
       message: err.message,
       responseStatus: err.response?.status,
       responseData: err.response?.data,
     });
-    // Propague um erro mais amigável ou retorne []
+    if (err.message && /invalid url/i.test(err.message)) {
+      throw new Error(
+        `URL inválida construída: ${url}. ` +
+          `Revise SUPERLOGICA_BASE_URL/SUPERLOGICA_BOLETOS_PATH ou o superBase do tenant.`
+      );
+    }
     throw new Error(
       err.code === "ENOTFOUND"
         ? "Não consegui resolver o host da API. Verifique o domínio ou use SUPERLOGICA_BASE_URL."
