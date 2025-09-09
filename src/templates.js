@@ -3,37 +3,26 @@
 const Templates = {
   // === MENUS / AJUDA ===
   menu: (empresaNome) =>
-    `
-*${empresaNome ? empresaNome + " | " : ""}Menu principal*
+    (
+`*${empresaNome ? empresaNome + " | " : ""}Menu principal*
 1) 2ª via de boletos
 2) Falar com atendimento
 3) Trocar/Escolher empresa
 
-_Responda com **1**, **2** ou **3**._`.trim(),
+_Responda com **1**, **2** ou **3**._`
+    ).trim(),
 
   help: () =>
-    `
-*🤖 Bot Superlógica — Ajuda*
-Use os números para navegar:
-1) 2ª via de boletos
-2) Falar com atendimento
-3) Trocar/Escolher empresa
-
-_Comandos rápidos:_
+    (
+`*🤖 Bot Superlógica — Ajuda*
 • *empresa* — listar empresas disponíveis
-• *cpf* — informar seu CPF
+• *cpf* — informar seu CPF para localizar boletos
 • *boleto* — buscar 2ª via dos boletos
-• */encerrar* — sair do atendimento humano e voltar ao menu
-`.trim(),
+• *sair* — encerrar atendimento
 
-  // === STRINGS USADAS PELO FLUXO (bot.js) ===
-  ASK_CPF: `Para continuar, me envie seu *CPF* (apenas números).\nEx.: 12345678909`,
-  CPF_INVALIDO: `CPF inválido. Envie apenas números (11 dígitos).`,
-  SEM_BOLETOS: `Não encontrei boletos em aberto para esse CPF nessa empresa.`,
-  HANDOFF_MSG: `Beleza! Encaminhei seu pedido para o atendimento humano. Assim que possível alguém te responde por aqui.\nPara voltar ao menu a qualquer momento, envie */encerrar*.`,
-  ENCERRADO: `Atendimento humano encerrado.`,
+_Envie uma das opções acima ou siga as instruções que eu mandar._`
+    ).trim(),
 
-  // === LISTAS DE EMPRESAS ===
   empresasDisponiveis: (empresas = []) => {
     if (!Array.isArray(empresas) || empresas.length === 0) {
       return `*Empresas disponíveis:*\n(nenhuma cadastrada)\n\n_Cadastre pelo painel/DB antes de usar._`;
@@ -45,10 +34,10 @@ _Comandos rápidos:_
       })
       .join("\n");
 
-    return `*Empresas disponíveis:*\n${lista}\n\n_Responda com o número da empresa (ex.: 1, 2, 3...)._`;
+    return `*Empresas disponíveis:*\n${lista}\n\n_Responda com o número da empresa._`;
   },
 
-  // Usada quando o fluxo pede explicitamente a escolha de empresa
+  // Nova: usada quando o fluxo pede explicitamente para o usuário escolher a empresa
   escolherEmpresa: (empresas = []) => {
     if (!Array.isArray(empresas) || empresas.length === 0) {
       return `*Escolher empresa:*\n(nenhuma cadastrada)\n\n_Cadastre pelo painel/DB antes de usar._`;
@@ -60,18 +49,26 @@ _Comandos rápidos:_
       })
       .join("\n");
 
-    return `*Escolher empresa*\n${lista}\n\n_Responda com o número da empresa (ex.: 1, 2, 3...) ou digite o nome._`;
+    return `*Escolher empresa*\n${lista}\n\n_Responda com o número da empresa._`;
   },
 
-  // === MENSAGENS DO FLUXO DE BOLETOS ===
+  // === TEXTOS DO FLUXO ===
+  ASK_CPF:
+    (
+`Para continuar, me envie seu *CPF* (apenas números).
+Ex.: 12345678909`
+    ).trim(),
+
+  CPF_INVALIDO: `CPF inválido. Envie apenas números (11 dígitos).`,
+
   buscandoBoletos: (empresaNome) =>
     `🔎 Buscando boletos na empresa *${empresaNome}*...`,
 
+  SEM_BOLETOS:
+    `Não encontrei boletos em aberto para esse CPF nessa empresa.`,
+
   boletosEncontrados: (qtd) =>
     `Encontrei *${qtd}* boleto(s). Enviando os detalhes...`,
-
-  nenhumBoleto: () =>
-    `Não encontrei boletos em aberto para esse CPF nessa empresa.`,
 
   boletoItem: ({ nossoNumero, vencimento, valor, link }) => {
     const valorFmt =
@@ -88,14 +85,17 @@ _Comandos rápidos:_
       .join("\n");
   },
 
+  HANDOFF_MSG:
+    `✅ Ok! Vou te direcionar para o atendimento humano. Aguarde nosso contato.`,
+
+  ENCERRADO: `Atendimento encerrado. 👋`,
+
   // === ERROS / ENCERRAMENTO ===
   erroGenerico: () =>
     `⚠️ Ocorreu um erro ao processar sua solicitação. Tente novamente em instantes.`,
-
-  encerrar: () => `Atendimento encerrado. 👋`,
 };
 
-// Compatibilidade com chamadas antigas que usavam "menu()"
+// Compatibilidade com chamadas antigas que esperavam Templates.menu()
 Templates.menu = Templates.menu;
 
 module.exports = Templates;
