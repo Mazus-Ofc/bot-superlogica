@@ -1,6 +1,3 @@
-"use strict";
-
-const axios = require("axios");
 const { getClient } = require("./wa");
 const db = require("./db");
 const {
@@ -13,7 +10,7 @@ const {
   escolherEmpresa,
 } = require("./templates");
 const { onlyDigits, validaCPF } = require("./validators");
-const { listarBoletosPorCPF } = require("./superlogica");
+const { listarBoletosPorCPF, getFallbackLink } = require("./superlogica");
 const { log } = require("./db");
 const { debug, error } = require("./logger");
 
@@ -22,22 +19,20 @@ async function sendText(client, waId, text) {
   await log("OUT", waId, text);
 }
 
-async function sendPdfByUrlOrBase64(client, waId, url, filename = "boleto.pdf", caption = "Segue sua 2ª via") {
+async function sendLinkPreviewSafely(client, waId, url, title = "2ª via do Boleto", description = "Abra para visualizar/baixar.") {
   try {
-    await client.sendFile(waId, url, filename, caption);
-    return true;
-  } catch (e1) {
-    try {
-      const resp = await axios.get(url, { responseType: "arraybuffer" });
-      const b64 = "data:application/pdf;base64," + Buffer.from(resp.data).toString("base64");
-      await client.sendFileFromBase64(waId, b64, filename, caption);
-      return true;
-    } catch (e2) {
-      error("sendPdfByUrlOrBase64", e2?.message || e2);
-      return false;
+    if (!url) return;
+    if (client?.sendLinkPreview) {
+      await client.sendLinkPreview(waId, url, title, description);
+    } else {
+      // fallback: manda só o link como texto
+      await sendText(client, waId, url);
     }
+  } catch (e) {
+    // ignora erros de preview
   }
 }
+
 
 async function startSession(sessionName) {
   const client = await getClient(sessionName);
@@ -46,15 +41,17 @@ async function startSession(sessionName) {
 }
 
 async function resolveTenantForContato(waId, sessionName) {
+  // tenta empresa selecionada pelo contato; se não, tenant padrão do número (via wa_sessions)
   const contato = await db.getContato(waId);
   if (contato?.current_tenant_id) {
     const t = await db.getTenantById(contato.current_tenant_id);
     if (t) return t;
   }
+  // descobrir e164 do remetente a partir do waId (simples: tirar '@c.us' e prefixar '+' se precisar)
   const e164 = "+" + onlyDigits(waId.replace("@c.us", ""));
   const def = await db.getDefaultTenantForPhoneE164(e164);
   if (def) return def;
-  return null;
+  return null; // ainda sem tenant (usuário pode escolher pelo menu 3)
 }
 
 async function handleIncoming(sessionName, client, msg) {
@@ -63,30 +60,42 @@ async function handleIncoming(sessionName, client, msg) {
   const contato = await db.getOrCreateContato(waId);
   await log("IN", waId, text, { sessionName });
 
+  // HUMANO pausado?
   if (contato.state === "HUMAN") {
     if (!contato.human_until || new Date(contato.human_until) > new Date()) {
-      return;
+      return; // não responder
     } else {
       await db.setContatoState(waId, "MENU", null);
       contato.state = "MENU";
     }
   }
 
+  // comando de encerrar
   if (text.toLowerCase() === "/encerrar") {
     await db.setContatoState(waId, "MENU", null);
     const tenant = await resolveTenantForContato(waId, sessionName);
-    return sendText(client, waId, ENCERRADO + "\n\n" + menu(tenant?.nome || null));
+    return sendText(
+      client,
+      waId,
+      ENCERRADO + "\n\n" + menu(tenant?.nome || null)
+    );
   }
 
+  // fluxo por estado
   const tenant = await resolveTenantForContato(waId, sessionName);
   let empresaNome = tenant?.nome || null;
 
   if (contato.state === "MENU") {
     if (text === "1") {
       if (!tenant) {
+        // precisa ter empresa definida
         await db.setContatoState(waId, "ESCOLHER_EMPRESA", null);
         const tenants = await db.listTenants();
-        return sendText(client, waId, "Antes, escolha a empresa:\n\n" + escolherEmpresa(tenants));
+        return sendText(
+          client,
+          waId,
+          "Antes, escolha a empresa:\n\n" + escolherEmpresa(tenants)
+        );
       }
       await db.setContatoState(waId, "PEDIR_CPF", null);
       return sendText(client, waId, ASK_CPF);
@@ -109,11 +118,22 @@ async function handleIncoming(sessionName, client, msg) {
     const n = parseInt(text, 10);
     const tenants = await db.listTenants();
     if (!Number.isInteger(n) || n < 1 || n > tenants.length) {
-      return sendText(client, waId, "Opção inválida. " + escolherEmpresa(tenants));
+      return sendText(
+        client,
+        waId,
+        "Opção inválida. " + escolherEmpresa(tenants)
+      );
     }
     await db.setContatoTenant(waId, tenants[n - 1].id);
     await db.setContatoState(waId, "MENU", null);
-    return sendText(client, waId, "Empresa definida: *" + tenants[n - 1].nome + "*.\n\n" + menu(tenants[n - 1].nome));
+    return sendText(
+      client,
+      waId,
+      "Empresa definida: *" +
+        tenants[n - 1].nome +
+        "*.\n\n" +
+        menu(tenants[n - 1].nome)
+    );
   }
 
   if (contato.state === "PEDIR_CPF") {
@@ -124,60 +144,75 @@ async function handleIncoming(sessionName, client, msg) {
     await db.setContatoCPF(waId, cpf);
 
     try {
-      const result = await listarBoletosPorCPF({
-        superBase: tenant?.superlogica_base,
-        appToken: tenant?.app_token,
-        accessToken: tenant?.access_token,
-        condominioId: tenant?.condominio_id,
+      const boletos = await listarBoletosPorCPF({
+        superBase: tenant.superlogica_base,
+        appToken: tenant.app_token,
+        accessToken: tenant.access_token,
+        condominioId: tenant.condominio_id,
         cpf,
       });
-
-      if (result && typeof result === "object" && !Array.isArray(result)) {
-        if (result.emailed) {
-          await db.setContatoState(waId, "MENU", null);
-          return sendText(client, waId, "Enviei a 2ª via para o seu e-mail cadastrado. 📧\n\n" + menu(empresaNome));
-        }
+      if (!boletos || boletos.length === 0) {
         await db.setContatoState(waId, "MENU", null);
-        return sendText(client, waId, "Não consegui consultar nem enviar por e-mail agora. Tente mais tarde ou fale com atendimento (2).\n\n" + menu(empresaNome));
-      }
-
-      const boletos = Array.isArray(result) ? result : [];
-      if (!boletos.length) {
-        await db.setContatoState(waId, "MENU", null);
-        return sendText(client, waId, SEM_BOLETOS + "\n\n" + menu(empresaNome));
-      }
-
-      const maxPdf = 3;
-      let enviados = 0;
-      for (const b of boletos.slice(0, maxPdf)) {
-        if (b.url_pdf) {
-          const ok = await sendPdfByUrlOrBase64(client, waId, b.url_pdf, `boleto-${b.nossoNumero || b.id || "2via"}.pdf`, "Segue sua 2ª via");
-          if (!ok) await sendText(client, waId, `Não consegui anexar o PDF. Acesse: ${b.url_pdf}`);
-        } else {
-          const val = Number(b.valor) || 0;
-          const textBoleto = [`*${b.descricao || "Boleto"}*`, `Venc.: ${b.vencimento || "-"}`, `Valor: R$ ${val.toFixed(2)}`, b.linha_digitavel ? `Linha: ${b.linha_digitavel}` : null].filter(Boolean).join("\n");
-          await sendText(client, waId, textBoleto);
+        await sendText(
+          client,
+          waId,
+          SEM_BOLETOS + "\\n\\n" + menu(empresaNome)
+        );
+        /* __INJECT_NOBOLETOS_FALLBACK__ */
+        const portal = getFallbackLink && getFallbackLink();
+        if (portal) {
+          await sendLinkPreviewSafely(client, waId, portal, "2ª via no Portal do Cliente", "Acesse para gerar/baixar seus boletos.");
         }
-        enviados++;
+        return;
       }
-
-      if (boletos.length > enviados) {
-        const resto = boletos.slice(enviados).map((b, i) => {
-          const val = Number(b.valor) || 0;
-          return `${i + 1 + enviados}) *${b.descricao || "Boleto"}*\nVenc.: ${b.vencimento || "-"}\nValor: R$ ${val.toFixed(2)}${b.url_pdf ? `\nLink: ${b.url_pdf}` : ""}`;
-        });
-        await sendText(client, waId, "*Outros boletos em aberto:*\n\n" + resto.join("\n\n"));
-      }
+      const linhas = boletos.map((b, i) => {
+        const valor = b.valor || 0;
+        const venc = b.vencimento || "-";
+        const nome = b.descricao || "Boleto";
+        const linha = b.linha_digitavel || "(linha indisponível)";
+        const url = b.url_pdf || "(link indisponível)";
+        return `${i + 1}) *${nome}*\\nVenc.: ${venc}\\nValor: R$ ${Number(
+          valor
+        ).toFixed(2)}\\nLinha: ${linha}\\nLink: ${url}`;
+      });
+      await sendText(
+        client,
+        waId,
+        "*Seus boletos em aberto:*\\n\\n" + linhas.join("\\n\\n")
+      );
+      /* __INJECT_PREVIEWS_SUCCESS__ */
+      try {
+        for (const b of boletos) {
+          const url = b.url_pdf || b.url_segundavia || b.link;
+          if (url) {
+            await sendLinkPreviewSafely(client, waId, url, "2ª via do Boleto", "Abra para visualizar/baixar o PDF.");
+          }
+        }
+      } catch (_) {}
 
       await db.setContatoState(waId, "MENU", null);
       return sendText(client, waId, menu(empresaNome));
     } catch (e) {
       error("listarBoletosPorCPF", e?.response?.data || e.message);
       await db.setContatoState(waId, "MENU", null);
-      return sendText(client, waId, "Não consegui consultar agora. Tente mais tarde ou fale com atendimento (2).\n\n" + menu(empresaNome));
+      await sendText(
+        client,
+        waId,
+        "Não consegui consultar agora. Tente mais tarde ou fale com atendimento (2).\\n\\n" +
+          menu(empresaNome)
+      );
+      /* __INJECT_CATCH_FALLBACK__ */
+      try {
+        const portal = getFallbackLink && getFallbackLink();
+        if (portal) {
+          await sendLinkPreviewSafely(client, waId, portal, "2ª via no Portal do Cliente", "Acesse para gerar/baixar seus boletos.");
+        }
+      } catch (_) {}
+      return;
     }
   }
 
+  // fallback
   await db.setContatoState(waId, "MENU", null);
   return sendText(client, waId, menu(empresaNome));
 }
