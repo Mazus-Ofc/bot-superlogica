@@ -1,0 +1,20 @@
+# 1. Atualizar
+sudo apt update && sudo apt -y upgrade
+
+# 2. Node.js LTS (20.x)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt -y install nodejs build-essential python3
+
+# 3. Dependências do Chromium/Puppeteer (whatsapp-web.js usa isso)
+sudo apt -y install \
+  ca-certificates fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
+  libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgbm1 \
+  libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 \
+  libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 \
+  libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
+  libxss1 libxtst6 lsb-release xdg-utils wget
+
+# 4. PostgreSQL
+sudo apt -y install postgresql postgresql-contrib
+sudo -u postgres psql -c "CREATE USER mazus WITH PASSWORD 'Mateus@01226362636';"
+sudo -u postgres psql -c "CREATE DATABASE bot_boleto_whats OWNER mazus;"

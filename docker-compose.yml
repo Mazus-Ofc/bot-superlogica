@@ -1,0 +1,29 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: bot_boleto
+    ports: ["5432:5432"]
+    volumes: [dbdata:/var/lib/postgresql/data]
+
+  bot:
+    build: .
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: bot_boleto
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      DEFAULT_WA_SESSION: ${DEFAULT_WA_SESSION}
+      HANDOFF_HOURS: 12
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+    depends_on: [db]
+    ports: ["3000:3000"]
+
+volumes:
+  dbdata:
