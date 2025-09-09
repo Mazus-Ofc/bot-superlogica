@@ -1,5 +1,4 @@
-const templates = require("./templates");
-("use strict");
+"use strict";
 
 const Templates = {
   help: () =>
@@ -62,5 +61,8 @@ Ex.: 12345678909`.trim(),
 
   encerrar: () => `Atendimento encerrado. 👋`,
 };
+
+// alias para compatibilidade com chamadas antigas
+Templates.menu = Templates.help;
 
 module.exports = Templates;
