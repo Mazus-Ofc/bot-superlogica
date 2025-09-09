@@ -1,8 +1,7 @@
 "use strict";
 
 const Templates = {
-  help: () =>
-    `
+  help: () => `
 *🤖 Bot Superlógica — Ajuda*
 • *empresa* — listar empresas disponíveis
 • *cpf* — informar seu CPF para localizar boletos
@@ -25,8 +24,22 @@ _Envie uma das opções acima ou siga as instruções que eu mandar._`.trim(),
     return `*Empresas disponíveis:*\n${lista}\n\n_Responda com o número da empresa ou digite o nome._`;
   },
 
-  pedirCpf: () =>
-    `
+  // Nova: usada quando o fluxo pede explicitamente para o usuário escolher a empresa
+  escolherEmpresa: (empresas = []) => {
+    if (!Array.isArray(empresas) || empresas.length === 0) {
+      return `*Escolher empresa:*\n(nenhuma cadastrada)\n\n_Cadastre pelo painel/DB antes de usar._`;
+    }
+    const lista = empresas
+      .map((e, i) => {
+        const nome = e?.nome ?? e?.fantasia ?? e?.razao ?? e?.slug ?? String(e);
+        return `*${i + 1}.* ${nome}`;
+      })
+      .join("\n");
+
+    return `*Escolher empresa*\n${lista}\n\n_Responda com o número da empresa ou digite o nome._`;
+  },
+
+  pedirCpf: () => `
 Para continuar, me envie seu *CPF* (apenas números).
 Ex.: 12345678909`.trim(),
 
@@ -62,7 +75,7 @@ Ex.: 12345678909`.trim(),
   encerrar: () => `Atendimento encerrado. 👋`,
 };
 
-// alias para compatibilidade com chamadas antigas
+// Alias para compatibilidade com chamadas antigas
 Templates.menu = Templates.help;
 
 module.exports = Templates;
