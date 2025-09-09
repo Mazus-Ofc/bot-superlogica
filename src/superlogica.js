@@ -1,25 +1,28 @@
-"use strict";
-
 const axios = require("axios");
 const { debug, error } = require("./logger");
 
-const MODE = (process.env.SUPERLOGICA_MODE || "api").toLowerCase(); // "api" | "email"
-const BASE_URL_ENV = process.env.SUPERLOGICA_BASE_URL || "";
-const PATH_BOLETOS_ENV = process.env.SUPERLOGICA_BOLETOS_PATH || "/v1/boletos";
-const LICENSE = process.env.SUPERLOGICA_LICENSE || "";
-const FALLBACK_LINK = process.env.SUPERLOGICA_FALLBACK_LINK || "";
+const HTTP_SCHEME = (process.env.SUPERLOGICA_HTTP_SCHEME || "http")
+  .replace(":", "")
+  .toLowerCase();
 
-/** Resolve host por base do módulo quando não há override no .env */
 function baseUrl(superBase) {
-  if (BASE_URL_ENV) return BASE_URL_ENV.replace(/\/+$/, "");
-  switch ((superBase || "").toLowerCase()) {
-    case "condominios":
-      return "https://apicondominios.superlogica.com";
+  const override = (process.env.SUPERLOGICA_BASE_URL || "").trim();
+  if (override && /^https?:\/\//i.test(override))
+    return override.replace(/\/+$/, "");
+  const b = (
+    superBase ||
+    process.env.SUPERLOGICA_DEFAULT_BASE ||
+    "imobiliarias"
+  ).toLowerCase();
+  switch (b) {
     case "imobiliarias":
       return "https://apiimobiliarias.superlogica.com";
+    case "condominios":
+      return "https://apicondominios.superlogica.com";
     case "assinaturas":
-    default:
       return "https://apiassinaturas.superlogica.com";
+    default:
+      return "https://apiimobiliarias.superlogica.com";
   }
 }
 
@@ -31,75 +34,74 @@ function headers(appToken, accessToken) {
   };
 }
 
-function looksLikeHtml(data, headers = {}) {
-  try {
-    if (typeof data === "string" && /<!DOCTYPE|<html/i.test(data)) return true;
-    const ct = (headers["content-type"] || headers["Content-Type"] || "").toString();
-    if (ct && !/json|javascript/i.test(ct)) return true; // não é json
-  } catch (_) {}
-  return false;
+function fmtCpfMask(cpfDigits) {
+  const d = String(cpfDigits || "")
+    .replace(/\D/g, "")
+    .slice(-11);
+  return d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
 }
 
-function getFallbackLink() {
-  return FALLBACK_LINK || null;
+function licenseHost(license) {
+  if (!license) throw new Error("MISSING_LICENSE");
+  return `${HTTP_SCHEME}://${license}.superlogica.net`;
+}
+
+async function triggerEmailCobrancas(license, cpf) {
+  const host = licenseHost(license);
+  const path = "/condor/atual/publico/emailcobrancasemaberto";
+
+  // 1) só dígitos
+  const urlClean = `${host}${path}?cpf=${cpf.replace(/\D/g, "")}`;
+  debug("Superlogica (email 2ª via) GET", urlClean);
+  try {
+    const r = await axios.get(urlClean, { timeout: 10000 });
+    return r.status === 200 || r.status === 202;
+  } catch (e1) {
+    // 2) com máscara
+    const urlMasked = `${host}${path}?cpf=${encodeURIComponent(
+      fmtCpfMask(cpf)
+    )}`;
+    debug("Superlogica (email 2ª via) GET", urlMasked);
+    try {
+      const r2 = await axios.get(urlMasked, { timeout: 10000 });
+      return r2.status === 200 || r2.status === 202;
+    } catch (e2) {
+      error("emailcobrancasemaberto", e2?.response?.status || e2.message);
+      return false;
+    }
+  }
+}
+
+function portalLink(license) {
+  return `https://${license}.superlogica.net/clients/areadocliente`;
 }
 
 /**
- * Fallback público por e-mail (Condo/Imob): dispara a 2ª via para o e-mail cadastrado.
- * Ex.: https://<license>.superlogica.net/condor/atual/publico/emailcobrancasemaberto?cpf=...
+ * Tenta API oficial /v1/boletos. Se falhar (404, etc), dispara e-mail de 2ª via
+ * e retorna um erro especial para o bot montar a mensagem amigável.
  */
-async function enviarSegundaViaPorEmail({ cpf }) {
-  if (!LICENSE) {
-    debug("Superlogica (email 2ª via) SKIP: LICENSE ausente no .env");
-    return { ok: false, sent: false };
-  }
-  const url = `https://${LICENSE}.superlogica.net/condor/atual/publico/emailcobrancasemaberto`;
-  const params = { cpf };
-  debug("Superlogica (email 2ª via) GET", url, params);
-  try {
-    const resp = await axios.get(url, { params, timeout: 15000 });
-    // Muitos desses endpoints retornam HTML ou redirecionam — consideramos sucesso 2xx
-    return { ok: true, sent: true, status: resp.status };
-  } catch (e) {
-    error("Superlogica (email 2ª via) erro", e.message);
-    return { ok: false, sent: false, status: e.response?.status };
-  }
-}
-
-/**
- * Tenta buscar boletos pela API oficial. Em caso de HTML/404, lança erro.
- * Retorna array normalizado de boletos (id, descricao, vencimento, valor, linha_digitavel, url_pdf/link).
- */
-async function listarBoletosPorCPF({ superBase, appToken, accessToken, condominioId, cpf }) {
-  if (MODE === "email") {
-    // Apenas dispara por e-mail e retorna vazio para o bot usar o fallback de link.
-    await enviarSegundaViaPorEmail({ cpf });
-    return [];
-  }
-
-  const base = baseUrl(superBase);
-  const path = PATH_BOLETOS_ENV.startsWith("/") ? PATH_BOLETOS_ENV : `/${PATH_BOLETOS_ENV}`;
-  const url = `${base}${path}`;
+async function listarBoletosPorCPF({
+  superBase,
+  appToken,
+  accessToken,
+  condominioId,
+  cpf,
+  license,
+}) {
+  const url = `${baseUrl(superBase)}/v1/boletos`;
   const params = { cpf, status: "em_aberto" };
-  if (condominioId && condominioId !== "NULL") params.condominio_id = condominioId;
+  if (condominioId && String(condominioId).toUpperCase() !== "NULL") {
+    params.condominio_id = condominioId;
+  }
 
-  debug("Superlogica GET", url, params);
   try {
-    const resp = await axios.get(url, {
+    debug("Superlogica GET", url, params);
+    const { data } = await axios.get(url, {
       params,
       headers: headers(appToken, accessToken),
-      timeout: 20000,
-      validateStatus: (s) => true, // vamos inspecionar
+      timeout: 15000,
     });
-
-    if (resp.status >= 400 || looksLikeHtml(resp.data, resp.headers)) {
-      error("Superlogica HTTP " + resp.status, typeof resp.data === "string" ? resp.data.slice(0, 500) : JSON.stringify(resp.data).slice(0, 500));
-      throw new Error(`HTTP_${resp.status}`);
-    }
-
-    const data = resp.data;
-    const arr = Array.isArray(data) ? data : (data?.boletos || data?.data || []);
-
+    const arr = Array.isArray(data) ? data : data?.boletos || [];
     return arr.map((b) => ({
       id: b.id || b.boleto_id || b.id_boleto,
       descricao: b.descricao || b.titulo || "Boleto",
@@ -109,14 +111,24 @@ async function listarBoletosPorCPF({ superBase, appToken, accessToken, condomini
       url_pdf: b.url_pdf || b.url_segundavia || b.link || null,
     }));
   } catch (e) {
-    // Plano B: dispara por e-mail, mas propaga erro pro bot acionar fallback visual
-    await enviarSegundaViaPorEmail({ cpf });
-    throw e;
+    const status = e?.response?.status;
+    error("Superlogica HTTP", status ? `${status}` : e.message);
+
+    // Fallback: envia e-mail com cobranças em aberto + devolve link do portal
+    if (license) {
+      const ok = await triggerEmailCobrancas(license, cpf);
+      if (ok) {
+        const err = new Error("FALLBACK_EMAIL_SENT");
+        err.userMessage =
+          `Acabei de te enviar por e-mail as cobranças em aberto. ` +
+          `Se preferir, acesse também: ${portalLink(license)}`;
+        throw err;
+      }
+    }
+
+    const err = new Error("HTTP_" + (status || "ERR"));
+    throw err;
   }
 }
 
-module.exports = {
-  listarBoletosPorCPF,
-  getFallbackLink,
-  enviarSegundaViaPorEmail,
-};
+module.exports = { listarBoletosPorCPF, portalLink, triggerEmailCobrancas };
