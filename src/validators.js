@@ -1,22 +1,27 @@
-function onlyDigits(s='') { return s.replace(/\D/g, ''); }
+"use strict";
 
-function validaCPF(cpf) {
-  cpf = onlyDigits(cpf || '');
-  if (cpf.length !== 11 || /(\d)\1{10}/.test(cpf)) return false;
+function onlyDigits(str = "") {
+  return String(str).replace(/\D+/g, "");
+}
+
+function validaCPF(cpf = "") {
+  cpf = onlyDigits(cpf);
+  if (!cpf || cpf.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(cpf)) return false;
+
   let soma = 0;
-  for (let i=0;i<9;i++) soma += parseInt(cpf[i])*(10-i);
-  let d1 = 11 - (soma % 11); d1 = d1 > 9 ? 0 : d1;
+  for (let i = 0; i < 9; i++) soma += parseInt(cpf.charAt(i)) * (10 - i);
+  let resto = (soma * 10) % 11;
+  if (resto === 10 || resto === 11) resto = 0;
+  if (resto !== parseInt(cpf.charAt(9))) return false;
+
   soma = 0;
-  for (let i=0;i<10;i++) soma += parseInt(cpf[i])*(11-i);
-  let d2 = 11 - (soma % 11); d2 = d2 > 9 ? 0 : d2;
-  return cpf[9] == d1 && cpf[10] == d2;
+  for (let i = 0; i < 10; i++) soma += parseInt(cpf.charAt(i)) * (11 - i);
+  resto = (soma * 10) % 11;
+  if (resto === 10 || resto === 11) resto = 0;
+  if (resto !== parseInt(cpf.charAt(10))) return false;
+
+  return true;
 }
 
-function normalizeWaId(phone) {
-  const d = onlyDigits(phone);
-  if (d.startswith && d.startswith('55')) return d + '@c.us';
-  if (d.slice(0,2) === '55') return d + '@c.us';
-  return '55' + d + '@c.us';
-}
-
-module.exports = { onlyDigits, validaCPF, normalizeWaId };
+module.exports = { onlyDigits, validaCPF };

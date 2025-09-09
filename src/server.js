@@ -1,32 +1,30 @@
+"use strict";
+
 require("dotenv").config();
-require("dns").setDefaultResultOrder("ipv4first");
 const express = require("express");
-const cron = require("node-cron");
-const { helmet, rateLimit } = require("./security");
-const routes = require("./routes");
+const helmet = require("helmet");
 const { startSession } = require("./bot");
-const { Pool } = require("pg");
+const { info } = require("./logger");
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
 app.use(helmet());
-app.use(rateLimit);
-app.use("/", routes);
+app.use(express.json());
 
-// CRON: reativar contatos após handoff expirar
-const pool = new Pool();
-cron.schedule("*/10 * * * *", async () => {
-  await pool.query(`
-    UPDATE contatos
-       SET state='MENU', human_until=NULL, updated_at=now()
-     WHERE state='HUMAN' AND human_until IS NOT NULL AND human_until < now()
-  `);
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+const PORT = Number(process.env.PORT || 3010);
+
+const server = app.listen(PORT, async () => {
+  info(`HTTP API on :${PORT}`);
 });
 
-const PORT = process.env.PORT || 3010;
-app.listen(PORT, async () => {
-  console.log("HTTP API on :" + PORT);
-  // iniciar sessão padrão
+server.once("listening", async () => {
   const session = process.env.DEFAULT_WA_SESSION || "whats-default";
-  await startSession(session);
+  try {
+    await startSession(session);
+  } catch (e) {
+    console.error("Falha ao iniciar sessão WhatsApp:", e?.message || e);
+  }
 });
+
+module.exports = app;
